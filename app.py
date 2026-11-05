@@ -1,234 +1,239 @@
-import streamlit as st
-import pandas as pd
+"""Interactive Blinkit sales analysis dashboard.
+
+Portfolio adaptation by Praful Kinkar of a project originally credited to
+Ashutosh Sahoo; see LICENSE and README.md for attribution and scope.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Mapping, Sequence
+
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import pandas as pd
 import seaborn as sns
-from matplotlib.colors import LinearSegmentedColormap
+import streamlit as st
 
-# ========== PAGE CONFIG ==========
-st.set_page_config(page_title="Blinkit Dashboard", layout="wide")
-
-# ========== HEADER WITH LOGO ==========
-#col1, col2 = st.columns([0.15, 0.85])
-#with col1:
-    #st.image("Design_Assets/Blinkit_Logo.png", width=70)
-    
-
-
-#with col2:
-#    st.markdown(
-#        "<h1 style='color:#F7C600; text-align:left center;'>Blinkit Data Analysis Dashboard</h1>",
-#        unsafe_allow_html=True
-#    )
-
+ROOT = Path(__file__).resolve().parent
+DATASET_PATH = ROOT / "Dataset" / "Blinkit_Cleaned_Data.csv"
+REQUIRED_COLUMNS = {
+    "Item Fat Content", "Item Identifier", "Item Type", "Outlet Establishment Year",
+    "Outlet Identifier", "Outlet Location Type", "Outlet Size", "Outlet Type",
+    "Item Visibility", "Item Weight", "Sales", "Rating",
+}
+FILTER_COLUMNS = ("Item Type", "Outlet Type", "Outlet Size", "Outlet Location Type")
+ACCENT = "#168A4A"
+HIGHLIGHT = "#F7C600"
+DARK_BACKGROUND = "#0E1117"
+LIGHT_TEXT = "#FAFAFA"
+MUTED_GRID = "#343842"
+ALL_OPTION = "All"
 
 
-st.markdown(
-    "<h1 style='color:#F7C600; text-align:left center;'>Blinkit Data Analysis Dashboard</h1>",
-    unsafe_allow_html=True
+@st.cache_data(show_spinner="Loading dataset…")
+def load_dataset(path: Path = DATASET_PATH) -> pd.DataFrame:
+    """Load and validate the supplied cleaned dataset."""
+    if not path.is_file():
+        raise FileNotFoundError(f"Dataset not found: {path}")
+    data = pd.read_csv(path)
+    missing = sorted(REQUIRED_COLUMNS.difference(data.columns))
+    if missing:
+        raise ValueError("Dataset is missing required columns: " + ", ".join(missing))
+    data = data.copy()
+    for column in ("Sales", "Rating", "Item Visibility", "Item Weight", "Outlet Establishment Year"):
+        data[column] = pd.to_numeric(data[column], errors="coerce")
+    if data["Sales"].isna().any() or not data["Sales"].gt(0).all():
+        raise ValueError("Sales must contain numeric, positive values without missing entries.")
+    if data["Rating"].isna().any() or not data["Rating"].between(1, 5).all():
+        raise ValueError("Rating must contain numeric values on the observed 1–5 scale.")
+    return data
+
+
+def filter_data(data: pd.DataFrame, filters: Mapping[str, Sequence[str]]) -> pd.DataFrame:
+    """Apply categorical filters; empty selections or an All choice include all values."""
+    filtered = data
+    for column, selected in filters.items():
+        if selected and ALL_OPTION not in selected:
+            filtered = filtered.loc[filtered[column].isin(selected)]
+    return filtered.copy()
+
+
+def calculate_kpis(data: pd.DataFrame) -> dict[str, float | int]:
+    """Calculate sales, sales per record, record count, and average rating."""
+    if data.empty:
+        return {"total_sales": 0.0, "average_sales": 0.0, "record_count": 0, "average_rating": 0.0}
+    return {
+        "total_sales": float(data["Sales"].sum()),
+        "average_sales": float(data["Sales"].mean()),
+        "record_count": int(data["Sales"].count()),
+        "average_rating": float(data["Rating"].mean()),
+    }
+
+
+def _bar_chart(data: pd.DataFrame, category: str, title: str, *, horizontal: bool = True) -> plt.Figure:
+    summary = data.groupby(category, dropna=False)["Sales"].sum().sort_values(ascending=not horizontal)
+    height = max(3.6, 0.38 * len(summary)) if horizontal else 4.2
+    fig, ax = plt.subplots(figsize=(8.4, height), facecolor=DARK_BACKGROUND, layout="constrained")
+    ax.set_facecolor(DARK_BACKGROUND)
+    ax.tick_params(colors=LIGHT_TEXT, labelsize=9)
+    for spine in ax.spines.values():
+        spine.set_color(MUTED_GRID)
+
+    if horizontal:
+        bars = ax.barh(summary.index.astype(str), summary.values, color=HIGHLIGHT, edgecolor="none", height=0.68)
+        ax.set_xlabel("Total Sales (source values)", color=LIGHT_TEXT, labelpad=10)
+        ax.set_ylabel(category, color=LIGHT_TEXT, labelpad=10)
+        ax.margins(x=0.18)
+        for bar, value in zip(bars, summary.values):
+            ax.annotate(
+                f"{value:,.2f}",
+                (bar.get_width(), bar.get_y() + bar.get_height() / 2),
+                xytext=(6, 0), textcoords="offset points", va="center", ha="left",
+                color=LIGHT_TEXT, fontsize=8, clip_on=False,
+            )
+    else:
+        bars = ax.bar(summary.index.astype(str), summary.values, color=HIGHLIGHT, edgecolor="none", width=0.66)
+        ax.set_xlabel(category, color=LIGHT_TEXT, labelpad=10)
+        ax.set_ylabel("Total Sales (source values)", color=LIGHT_TEXT, labelpad=10)
+        ax.tick_params(axis="x", labelrotation=0, pad=6)
+        ax.margins(y=0.2)
+        for bar, value in zip(bars, summary.values):
+            ax.annotate(
+                f"{value:,.2f}",
+                (bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                xytext=(0, 5), textcoords="offset points", va="bottom", ha="center",
+                color=LIGHT_TEXT, fontsize=8, clip_on=False,
+            )
+    ax.set_title(title, color=LIGHT_TEXT, fontsize=13, fontweight="bold", pad=14, loc="left")
+    ax.grid(axis="x" if horizontal else "y", color=MUTED_GRID, linewidth=0.8, alpha=0.8)
+    ax.set_axisbelow(True)
+    return fig
+
+
+def _show_chart(data: pd.DataFrame, category: str, title: str, *, horizontal: bool = True) -> None:
+    if data.empty:
+        st.info(f"No records available for {title.lower()} under the current filters.")
+        return
+    fig = _bar_chart(data, category, title, horizontal=horizontal)
+    st.pyplot(fig, width="stretch")
+    plt.close(fig)
+
+
+def main() -> None:
+    st.set_page_config(page_title="Blinkit Sales Analysis", page_icon="📊", layout="wide")
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] > div:first-child { padding-top: 1.4rem; }
+        [data-testid="stSidebar"] { min-width: 20rem; }
+        [data-testid="stSidebar"] .stMultiSelect { margin-bottom: 1.15rem; }
+        [data-testid="stSidebar"] [data-baseweb="tag"] { max-width: 100%; }
+        [data-testid="stSidebar"] [data-baseweb="tag"] span {
+            white-space: normal; overflow-wrap: anywhere; line-height: 1.25;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.title("Blinkit Sales Analysis")
+    st.caption("Interactive exploration of the supplied item/outlet snapshot. Sales currency and period are not specified by the source.")
+
+    try:
+        data = load_dataset()
+    except (OSError, pd.errors.ParserError, ValueError) as error:
+        st.error(f"Unable to load a valid dataset: {error}")
+        st.info("Confirm Dataset/Blinkit_Cleaned_Data.csv exists and contains the documented columns.")
+        st.stop()
+
+    st.sidebar.header("Dataset filters")
+    selections: dict[str, list[str]] = {}
+    for column in FILTER_COLUMNS:
+        options = sorted(data[column].dropna().astype(str).unique().tolist())
+        selections[column] = st.sidebar.multiselect(
+            column,
+            [ALL_OPTION, *options],
+            default=[ALL_OPTION],
+            key=f"filter_{column}",
+            help="Choose All to include every value, or clear All and select specific values.",
+            placeholder="All values",
+        )
+    filtered = filter_data(data, selections)
+
+    st.sidebar.caption(f"Showing {len(filtered):,} of {len(data):,} records.")
+    if filtered.empty:
+        st.warning("No records match the selected filters. Select at least one value for each filter.")
+
+    metrics = calculate_kpis(filtered)
+    cards = st.columns(4)
+    cards[0].metric("Total Sales", f"{metrics['total_sales']:,.2f}")
+    cards[1].metric("Average Sales / Record", f"{metrics['average_sales']:,.2f}")
+    cards[2].metric("Number of Records", f"{metrics['record_count']:,}")
+    cards[3].metric("Average Rating", f"{metrics['average_rating']:.2f} / 5")
+    st.caption("Record count is not units sold. Sales are displayed without a currency symbol because the source does not identify a currency.")
+
+    st.subheader("Sales overview")
+    left, right = st.columns(2)
+    with left:
+        _show_chart(filtered, "Item Type", "Sales by Item Type")
+        _show_chart(filtered, "Outlet Size", "Sales by Outlet Size")
+    with right:
+        _show_chart(filtered, "Outlet Type", "Sales by Outlet Type")
+        _show_chart(filtered, "Outlet Location Type", "Sales by Location Tier")
+
+    with st.expander("Additional analysis", expanded=False):
+        fat, year = st.columns(2)
+        with fat:
+            _show_chart(filtered, "Item Fat Content", "Sales by Fat Content")
+        with year:
+            _show_chart(filtered, "Outlet Establishment Year", "Sales by Outlet Establishment Year", horizontal=False)
+        st.markdown("#### Average Rating by Item Type")
+        rating_summary = filtered.groupby("Item Type", as_index=False).agg(
+            Average_Rating=("Rating", "mean"), Records=("Rating", "count"), Total_Sales=("Sales", "sum")
+        ).sort_values("Average_Rating")
+        st.dataframe(rating_summary, width="stretch", hide_index=True)
+        st.markdown("#### Item Visibility and Sales")
+        st.caption("This is a descriptive association only; correlation does not establish causation.")
+        fig, ax = plt.subplots(figsize=(8.4, 4.2), facecolor=DARK_BACKGROUND, layout="constrained")
+        ax.set_facecolor(DARK_BACKGROUND)
+        sns.scatterplot(data=filtered, x="Item Visibility", y="Sales", alpha=0.45, ax=ax, color=HIGHLIGHT, edgecolor=None)
+        ax.set_title("Item Visibility versus Sales", color=LIGHT_TEXT, fontsize=13, fontweight="bold", pad=14, loc="left")
+        ax.set_xlabel("Item Visibility", color=LIGHT_TEXT, labelpad=10)
+        ax.set_ylabel("Sales (source values)", color=LIGHT_TEXT, labelpad=10)
+        ax.tick_params(colors=LIGHT_TEXT, labelsize=9)
+        ax.grid(color=MUTED_GRID, linewidth=0.8, alpha=0.8)
+        for spine in ax.spines.values():
+            spine.set_color(MUTED_GRID)
+        st.pyplot(fig, width="stretch")
+        plt.close(fig)
+
+    st.subheader("Key Business Insights")
+    if filtered.empty:
+        st.write("No insight can be calculated for an empty filter selection.")
+    else:
+        item_totals = filtered.groupby("Item Type")["Sales"].sum().sort_values(ascending=False)
+        location_totals = filtered.groupby("Outlet Location Type")["Sales"].sum().sort_values(ascending=False)
+        size_averages = filtered.groupby("Outlet Size")["Sales"].mean().sort_values(ascending=False)
+        st.markdown(
+            f"- Highest sales item type: **{item_totals.index[0]}** ({item_totals.iloc[0]:,.2f} source units).\n"
+            f"- Highest sales location tier: **{location_totals.index[0]}** ({location_totals.iloc[0]:,.2f} source units).\n"
+            f"- Highest average sales per record by outlet size: **{size_averages.index[0]}** ({size_averages.iloc[0]:,.2f})."
+        )
+        st.caption("These summaries update with the current filters and describe this dataset snapshot only.")
+
+    st.subheader("Filtered data preview")
+    st.dataframe(filtered.head(100), width="stretch", hide_index=True)
+    st.download_button(
+        "Download filtered data as CSV",
+        data=filtered.to_csv(index=False).encode("utf-8-sig"),
+        file_name="blinkit_filtered_data.csv",
+        mime="text/csv",
+        disabled=filtered.empty,
     )
 
-st.markdown("---")
-
-# ========== CLEANED DATASET OVERVIEW ==========
-st.subheader("Cleaned Dataset Overview")
-
-df = pd.read_csv("Dataset/Blinkit_Cleaned_Data.csv")
-
-# Show first 10 rows & 10 columns
-st.dataframe(df.head(10).iloc[:, :10])
-
-# ========== KPI REQUIREMENTS ==========
-st.subheader("📊 KPI Requirements")
-
-total_sales = df['Sales'].sum()
-avg_sales = df['Sales'].mean()
-no_of_items_sold = df['Sales'].count()
-avg_ratings = df['Rating'].mean()
-
-kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-kpi1.metric("Total Sales", f"${total_sales:,.0f}")
-kpi2.metric("Average Sales", f"${avg_sales:,.1f}")
-kpi3.metric("Items Sold", f"{no_of_items_sold:,.0f}")
-kpi4.metric("Average Rating", f"{avg_ratings:.1f}")
-
-st.markdown("---")
-
-# ========== ANALYSIS IN SQL AND VISUALIZATION IN PYTHON ==========
-st.subheader("📈 Analysis in SQL and Visualization in Python")
-
-# --- Total Sales by Fat Content ---
-st.markdown("###  Total Sales by Fat Content")
-fat_df = pd.read_csv("Result_csv/Total Sales by Fat Content.csv")
-
-col1, col2 = st.columns(2)
-with col1:
-    st.dataframe(fat_df)
-with col2:
-    sales_by_fat = df.groupby('Item Fat Content')['Sales'].sum()
-    fig, ax = plt.subplots(figsize=(3.5, 3.5))
-    ax.pie(
-        sales_by_fat,
-        labels=sales_by_fat.index,
-        autopct="%.0f%%",
-        startangle=90,
-        wedgeprops={'edgecolor': 'black', 'linewidth': 1}
-    )
-    ax.set_title("Sales by Fat Content")
-    st.pyplot(fig)
-    
-    
-st.markdown(
-    "<div style='background-color:#ffeb3b; padding:8px; border-radius:6px;'>"
-    "<span style='color:#000000; font-weight:bold; font-size:16px;'>"
-    "<span style='color:#00a651;'>★</span> Key Insight: Sales of Low Fat items are higher than Regular ones — approximately 65% for Low Fat vs 35% for Regular."
-    "</span></div>",
-    unsafe_allow_html=True
-)
+    st.divider()
+    st.caption("Portfolio adaptation by Praful Kinkar. Original project credited to Ashutosh Sahoo; see LICENSE and README for attribution.")
 
 
-# --- Total Sales by Item Type ---
-st.markdown("### Total Sales by Item Type")
-type_df = pd.read_csv("Result_csv/Total Sales by Item Type.csv")
-
-col1, col2 = st.columns(2)
-with col1:
-    st.dataframe(type_df)
-with col2:
-    sales_by_type = df.groupby('Item Type')['Sales'].sum().sort_values(ascending=False)
-    fig, ax = plt.subplots(figsize=(6, 4))
-    bars = ax.bar(sales_by_type.index, sales_by_type.values)
-    plt.xticks(rotation=90, fontsize=8)
-    plt.tight_layout()
-    st.pyplot(fig)
-    
-    
-st.markdown(
-    "<div style='background-color:#ffeb3b; padding:8px; border-radius:6px;'>"
-    "<span style='color:#000000; font-weight:bold; font-size:16px;'>"
-    "<span style='color:#00a651;'>★</span> Key Insight: Fruits and Vegetables exhibit the highest sales performance among all Item Types."
-    "</span></div>",
-    unsafe_allow_html=True
-)
-
-
-# --- Fat Content by Outlet for Total Sales ---
-st.markdown("### Fat Content by Outlet for Total Sales")
-fat_outlet_df = pd.read_csv("Result_csv/Fat Content by Outlet for Total Sales.csv")
-
-col1, col2 = st.columns(2)
-with col1:
-    st.dataframe(fat_outlet_df)
-with col2:
-    grouped = df.groupby(['Outlet Location Type', 'Item Fat Content'])['Sales'].sum().unstack()
-    grouped = grouped[['Regular', 'Low Fat']]
-    fig, ax = plt.subplots(figsize=(6, 3))
-    grouped.plot(kind='bar', ax=ax)
-    plt.xticks(rotation=0)
-    plt.tight_layout()
-    st.pyplot(fig)
-
-# --- Total Sales by Outlet Establishment Year ---
-st.markdown("### Total Sales by Outlet Establishment Year")
-establish_df = pd.read_csv("Result_csv/Total Sales by Outlet Establishment.csv")
-
-col1, col2 = st.columns(2)
-with col1:
-    st.dataframe(establish_df)
-with col2:
-    sales_by_year = df.groupby('Outlet Establishment Year')['Sales'].sum().sort_index()
-    fig, ax = plt.subplots(figsize=(6, 3))
-    ax.plot(sales_by_year.index, sales_by_year.values, marker='o')
-    ax.set_title("Total Sales by Outlet Establishment")
-    plt.tight_layout()
-    st.pyplot(fig)
-
-# --- Sales by Outlet Size ---
-st.markdown("### Sales by Outlet Size")
-size_df = pd.read_csv("Result_csv/Sales by Outlet Size.csv")
-
-col1, col2 = st.columns(2)
-with col1:
-    st.dataframe(size_df)
-with col2:
-    sales_by_size = df.groupby('Outlet Size')['Sales'].sum()
-    fig, ax = plt.subplots(figsize=(4, 4))
-    ax.pie(
-        sales_by_size,
-        labels=sales_by_size.index,
-        autopct="%1.1f%%",
-        startangle=90,
-        wedgeprops={'edgecolor': 'black', 'linewidth': 1}
-    )
-    plt.tight_layout()
-    st.pyplot(fig)
-
-
-st.markdown(
-    "<div style='background-color:#ffeb3b; padding:8px; border-radius:6px;'>"
-    "<span style='color:#000000; font-weight:bold; font-size:16px;'>"
-    "<span style='color:#00a651;'>★</span> Key Insight: Outlets with Medium size demonstrate higher sales compared to both Small and High Outlets."
-    "</span></div>",
-    unsafe_allow_html=True
-)
-
-
-# --- Total Sales by Outlet Location Type ---
-st.markdown("### Total Sales by Outlet Location Type")
-location_df = pd.read_csv("Result_csv/Sales by Outlet Location.csv")
-
-col1, col2 = st.columns(2)
-with col1:
-    st.dataframe(location_df)
-with col2:
-    sales_by_location = df.groupby('Outlet Location Type')['Sales'].sum().reset_index()
-    sales_by_location = sales_by_location.sort_values('Sales', ascending=False)
-    fig, ax = plt.subplots(figsize=(6, 3))
-    sns.barplot(x='Sales', y='Outlet Location Type', data=sales_by_location, ax=ax)
-    plt.tight_layout()
-    st.pyplot(fig)
-    
-    
-st.markdown(
-    "<div style='background-color:#ffeb3b; padding:8px; border-radius:6px;'>"
-    "<span style='color:#000000; font-weight:bold; font-size:16px;'>"
-    "<span style='color:#00a651;'>★</span> Key Insight: Tier 3 outlet locations exhibit the highest sales compared to Tier 1 and Tier 2 locations."
-    "</span></div>",
-    unsafe_allow_html=True
-)
-
-
-# --- Heatmap ---
-st.markdown("### Average Sales Distribution Across Outlet Type & Item Type (Heatmap)")
-blinkit_cmap = LinearSegmentedColormap.from_list("blinkit", ["#fff200", "#c6ff00", "#00a651"])
-pivot = df.pivot_table(values='Sales', index='Item Type', columns='Outlet Type', aggfunc='mean')
-
-fig, ax = plt.subplots(figsize=(8, 5))
-sns.heatmap(pivot, annot=True, fmt=".1f", cmap=blinkit_cmap, ax=ax)
-plt.tight_layout()
-st.pyplot(fig)
-
-
-    
-st.markdown(
-    "<div style='background-color:#ffeb3b; padding:8px; border-radius:6px;'>"
-    "<span style='color:#000000; font-weight:bold; font-size:16px;'>"
-    "<span style='color:#00a651;'>★</span> Key Insight: Among all item types and outlet types, Hard Drinks in Supermarket Type 2 outlet record the highest average sales."
-    "</span></div>",
-    unsafe_allow_html=True
-)
-
-# --- Power BI Dashboard ---
-st.markdown("### 📊 Blinkit Power BI Dashboard")
-st.image("Output_Screenshots/Blinkit_Dashboard.png", use_container_width=True, caption="Power BI Dashboard")
-
-
-
-st.markdown(
-    """
-    ---
-    **Developed by:** Ashutosh Sahoo  
-    **GitHub Repository:** [Click Here 🔗](https://github.com/Ashuytosh/Blinkit_Data_Analysis)
-    """
-)
-
-
+if __name__ == "__main__":
+    main()
