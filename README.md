@@ -68,7 +68,7 @@ The existing [PBIX artifact](Blinkit_Dashboard_Power_BI.pbix) and report screens
 
 ## Streamlit dashboard
 
-The app reads the cleaned dataset directly and provides sidebar filters for item type, outlet type, outlet size, and location tier, with **All** selected by default. Clearing selections also includes all records. Filter context applies to the KPI cards and charts. It includes sales summaries, rating analysis, visibility-versus-sales exploration, live key summaries, data preview, and a filtered CSV download. Missing files, missing columns, and invalid KPI values are reported in the interface.
+The app reads the cleaned dataset directly and presents a dark, card-based analytics dashboard with Overview, Sales Analysis, Product Analysis, Outlet Analysis, and Data Quality sections. Sidebar filters for item type, outlet type, outlet size, and location tier default to **All**; clearing selections also includes all records. The current filter context applies to all four KPIs, chart panels, sales/rating insights, and missing-data summaries. The Data Quality section includes a filtered data preview and CSV download. Missing files, missing columns, and invalid KPI values are reported in the interface.
 
 ## KPI definitions
 
